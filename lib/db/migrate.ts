@@ -207,6 +207,27 @@ const migrations: Migration[] = [
     );
     `,
   },
+  {
+    id: "002_mcp_sessions",
+    sql: `
+    CREATE TABLE IF NOT EXISTS mcp_sessions (
+      session_id TEXT PRIMARY KEY,
+      key_id TEXT NOT NULL,
+      key_name TEXT NOT NULL,
+      exposure_mode TEXT NOT NULL DEFAULT 'direct',
+      ip TEXT,
+      client_name TEXT,
+      client_version TEXT,
+      subscriptions TEXT,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      closed_at INTEGER,
+      close_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS mcp_sessions_key_idx ON mcp_sessions(key_id, last_seen_at);
+    CREATE INDEX IF NOT EXISTS mcp_sessions_last_seen_idx ON mcp_sessions(last_seen_at);
+    `,
+  },
 ];
 
 export function runMigrations(sqlite: Database.Database): void {

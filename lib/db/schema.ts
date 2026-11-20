@@ -177,6 +177,34 @@ export const settings = sqliteTable("settings", {
   value: text("value", { mode: "json" }),
 });
 
+/**
+ * Persisted MCP sessions.
+ *
+ * The live objects (SDK Server + StreamableHTTPServerTransport, SSE streams, in-flight requests)
+ * cannot survive a restart — they are sockets. What CAN survive is the session *identity*: the
+ * id the client holds, who owns it, when it was last seen and which resources it subscribed to.
+ * Keeping that in SQLite lets a restarted gateway rehydrate a session instead of answering the
+ * client's next request with 404 and forcing it to re-initialize.
+ */
+export const mcpSessions = sqliteTable("mcp_sessions", {
+  sessionId: text("session_id").primaryKey(),
+  keyId: text("key_id").notNull(),
+  keyName: text("key_name").notNull(),
+  exposureMode: text("exposure_mode", { enum: ["direct", "discovery"] }).notNull().default("direct"),
+  ip: text("ip"),
+  clientName: text("client_name"),
+  clientVersion: text("client_version"),
+  /** JSON array of subscribed upstream resource URIs. */
+  subscriptions: text("subscriptions", { mode: "json" }).$type<string[]>(),
+  createdAt: integer("created_at").notNull(),
+  lastSeenAt: integer("last_seen_at").notNull(),
+  closedAt: integer("closed_at"),
+  closeReason: text("close_reason"),
+}, (t) => [
+  index("mcp_sessions_key_idx").on(t.keyId, t.lastSeenAt),
+  index("mcp_sessions_last_seen_idx").on(t.lastSeenAt),
+]);
+
 export const oauthStates = sqliteTable("oauth_states", {
   state: text("state").primaryKey(),
   upstreamId: text("upstream_id").notNull(),

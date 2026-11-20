@@ -23,6 +23,8 @@ import {
   createSessionState,
   getSession,
   listSessions,
+  persistedSession,
+  registerRehydratedSession,
   registerSession,
   toSummary,
   touch,
@@ -228,6 +230,80 @@ export async function openSession(auth: McpAuth, ip: string | null): Promise<Gat
 }
 
 /** Routes a /mcp request: auth, session resolution, initialize/stream/delete. */
+// ---------------------------------------------------------------------------------------------
+// Restart recovery
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Rebuilds a live session for an id this process does not hold in memory.
+ *
+ * The SDK transport refuses any non-initialize request until it believes it has been initialised
+ * and owns the session id. A fresh transport is what the SDK expects when a request arrives for a
+ * session it has not seen in this process, so we seed those two internal flags from the persisted
+ * row and connect a fresh `Server`. Everything the handlers read (catalog, effective access,
+ * prompts) comes from the database, so the rebuilt session serves the same view as the original.
+ *
+ * Returns null when there is no valid persisted row, or it belongs to another key.
+ */
+export async function rehydrateSession(
+  sessionId: string,
+  auth: McpAuth,
+  ip: string | null,
+): Promise<GatewaySession | null> {
+  const persisted = persistedSession(sessionId);
+  if (!persisted) return null;
+  // A session never changes owner: a different key presenting the id is not a restart.
+  if (persisted.keyId !== auth.keyId) return null;
+
+  const state = createSessionState({
+    sessionId: persisted.sessionId,
+    keyId: persisted.keyId,
+    keyName: persisted.keyName,
+    exposureMode: persisted.exposureMode,
+    ip: persisted.ip ?? ip,
+  });
+  state.createdAt = persisted.createdAt;
+  state.subscriptions = new Set(persisted.subscriptions);
+
+  const server = createGatewayServer(state);
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => persisted.sessionId,
+    keepAliveMs: config.defaults.sseKeepAliveMs,
+  });
+
+  // Seed the transport's view: it must consider the session initialised and owned.
+  const inner = (transport as unknown as {
+    _webStandardTransport?: { _initialized?: boolean; sessionId?: string };
+  })._webStandardTransport;
+  if (!inner) {
+    logger.warn({ sessionId }, "cannot rehydrate: transport internals unavailable");
+    return null;
+  }
+  inner._initialized = true;
+  inner.sessionId = persisted.sessionId;
+
+  transport.onerror = (error: Error) => {
+    logger.warn({ sessionId, err: String(error) }, "MCP transport error (rehydrated)");
+  };
+
+  await server.connect(transport);
+  return registerRehydratedSession({
+    sessionId: persisted.sessionId,
+    keyId: persisted.keyId,
+    keyName: persisted.keyName,
+    exposureMode: persisted.exposureMode,
+    ip: persisted.ip ?? ip,
+    clientInfo:
+      persisted.clientName || persisted.clientVersion
+        ? { name: persisted.clientName ?? "unknown", version: persisted.clientVersion ?? "unknown" }
+        : null,
+    subscriptions: persisted.subscriptions,
+    createdAt: persisted.createdAt,
+    server,
+    transport,
+  });
+}
+
 export async function mcpHandler(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const method = req.method ?? "GET";
   const auth = authorizeMcp(req, res);
@@ -258,8 +334,26 @@ export async function mcpHandler(req: IncomingMessage, res: ServerResponse): Pro
     return;
   }
 
-  // Unknown session id: 404 so the client re-initializes (spec §6.1).
+  // A session id this process does not hold may still be a valid session that predates a
+  // restart. Rebuild it from the persisted row rather than answering 404, so open agents survive
+  // a deploy instead of re-initializing.
   if (requestedSessionId) {
+    const rehydrated = await rehydrateSession(requestedSessionId, auth, requestIp(req));
+    if (rehydrated) {
+      if (method === "DELETE") {
+        await closeSession(rehydrated.sessionId, "client-delete");
+        res.statusCode = 200;
+        res.end();
+        return;
+      }
+      const handler = rehydrated.transport.handleRequest;
+      if (!handler) {
+        sendJson(res, 500, { error: "internal_error", message: "Transport MCP incompatible." });
+        return;
+      }
+      await handler.call(rehydrated.transport, req, res);
+      return;
+    }
     sendJson(res, 404, { error: "session_not_found", message: "Session MCP inconnue : réinitialise la connexion." });
     return;
   }

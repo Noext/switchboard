@@ -8,8 +8,14 @@
  *   - the session stayed idle for 24 h (this background janitor),
  *   - the process shuts down.
  *
- * The registry is process-local: sessions never survive a restart, which is exactly what the
- * spec wants — an unknown `Mcp-Session-Id` answers 404 and the client re-initializes.
+ * ## Surviving a restart
+ *
+ * The live objects (server, transport, SSE sockets, in-flight requests) are process memory, so a
+ * restart necessarily drops them. The session *identity* is persisted in SQLite instead
+ * (lib/gateway/session-store.ts), and `rehydrateSession()` rebuilds a working session for an id
+ * the client still holds. A deploy therefore no longer forces every open agent to re-initialize.
+ *
+ * Closed sessions are deleted from the store, so a persisted row always means "still valid".
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -18,6 +24,17 @@ import type { Implementation } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "../config";
 import { emitUiEvent } from "../events";
 import { logger } from "../logs";
+import {
+  deleteSession as deletePersistedSession,
+  deleteSessionsForKey,
+  loadSession,
+  persistClientInfo,
+  persistSubscriptions,
+  pruneIdleSessions,
+  saveSession,
+  touchPersistedSession,
+  type PersistedSession,
+} from "./session-store";
 import type { ExposureMode } from "../types";
 
 /**
@@ -109,6 +126,18 @@ export function registerSession(
 ): GatewaySession {
   const session: GatewaySession = { ...state, server, transport };
   sessions.set(state.sessionId, session);
+  saveSession({
+    sessionId: state.sessionId,
+    keyId: state.keyId,
+    keyName: state.keyName,
+    exposureMode: state.exposureMode,
+    ip: state.ip,
+    clientName: state.clientInfo?.name ?? null,
+    clientVersion: state.clientInfo?.version ?? null,
+    subscriptions: [...state.subscriptions],
+    createdAt: state.createdAt,
+    lastSeenAt: state.lastSeenAt,
+  });
   ensureJanitor();
   logger.info(
     { sessionId: state.sessionId, keyId: state.keyId, keyName: state.keyName, ip: state.ip },
@@ -138,7 +167,10 @@ export function hasSession(sessionId: string): boolean {
 /** Records activity for the idle timeout. Cheap enough to call on every HTTP request. */
 export function touch(sessionId: string): void {
   const session = sessions.get(sessionId);
-  if (session) session.lastSeenAt = Date.now();
+  if (!session) return;
+  const now = Date.now();
+  session.lastSeenAt = now;
+  touchPersistedSession(sessionId, now);
 }
 
 /** Satisfies the "lastSeenAt" field for a state object that is not registered yet. */
@@ -151,14 +183,20 @@ export function setClientInfo(sessionId: string, info: Implementation | null): v
   const session = sessions.get(sessionId);
   if (!session) return;
   session.clientInfo = info;
+  persistClientInfo(sessionId, info);
   emitUiEvent("session.changed", { action: "update", session: toSummary(session) });
 }
 
 /** Closes one session. Safe for an unknown id; never throws. */
 export async function closeSession(sessionId: string, reason = "closed"): Promise<void> {
   const session = sessions.get(sessionId);
-  if (!session) return;
+  if (!session) {
+    // Not in memory but possibly still persisted (a restart raced the close): drop the row too.
+    deletePersistedSession(sessionId);
+    return;
+  }
   sessions.delete(sessionId);
+  deletePersistedSession(sessionId);
   try {
     await session.server.close();
   } catch (error) {
@@ -177,6 +215,9 @@ export async function closeSession(sessionId: string, reason = "closed"): Promis
 export async function closeSessionsForKey(keyId: string, reason = "key-revoked"): Promise<number> {
   const ids = [...sessions.values()].filter((s) => s.keyId === keyId).map((s) => s.sessionId);
   await Promise.all(ids.map((id) => closeSession(id, reason)));
+  // Also drop any persisted row for this key, including sessions this process never had in
+  // memory (they would otherwise be rehydrated after a restart, defeating the revocation).
+  deleteSessionsForKey(keyId);
   return ids.length;
 }
 
@@ -219,7 +260,9 @@ export async function sweepIdleSessions(now = Date.now()): Promise<number> {
 export function ensureJanitor(): void {
   if (janitor) return;
   janitor = setInterval(() => {
-    void sweepIdleSessions().catch((error) => logger.warn({ err: String(error) }, "session janitor failed"));
+    void sweepIdleSessions()
+      .then(() => prunePersistedIdleSessions())
+      .catch((error) => logger.warn({ err: String(error) }, "session janitor failed"));
   }, JANITOR_INTERVAL_MS);
   if (typeof janitor.unref === "function") janitor.unref();
 }
@@ -236,6 +279,68 @@ export async function closeAllSessions(reason = "shutdown"): Promise<void> {
   stopSessionJanitor();
   const ids = [...sessions.keys()];
   await Promise.all(ids.map((id) => closeSession(id, reason)));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Restart recovery
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Registers an already-built session for a persisted id (see lib/gateway/http.ts, which owns the
+ * SDK object construction). Used only when a client presents a session id this process did not
+ * create — i.e. after a restart.
+ */
+export function registerRehydratedSession(input: {
+  sessionId: string;
+  keyId: string;
+  keyName: string;
+  exposureMode: ExposureMode;
+  ip: string | null;
+  clientInfo: Implementation | null;
+  subscriptions: string[];
+  createdAt: number;
+  server: Server;
+  transport: ClosableTransport;
+}): GatewaySession {
+  const now = Date.now();
+  const state: GatewaySessionState = {
+    sessionId: input.sessionId,
+    keyId: input.keyId,
+    keyName: input.keyName,
+    exposureMode: input.exposureMode,
+    ip: input.ip,
+    clientInfo: input.clientInfo,
+    createdAt: input.createdAt,
+    lastSeenAt: now,
+    subscriptions: new Set(input.subscriptions),
+  };
+  const session: GatewaySession = { ...state, server: input.server, transport: input.transport };
+  sessions.set(input.sessionId, session);
+  touchPersistedSession(input.sessionId, now);
+  ensureJanitor();
+  logger.info(
+    { sessionId: input.sessionId, keyId: input.keyId, keyName: input.keyName },
+    "MCP session rehydrated after restart",
+  );
+  emitUiEvent("session.changed", { action: "open", rehydrated: true, session: toSummary(session) });
+  return session;
+}
+
+/** Persisted (still-valid) session row for an id, or null. */
+export function persistedSession(sessionId: string): PersistedSession | null {
+  return loadSession(sessionId);
+}
+
+/** Records the subscription set so a restart can restore `resources/subscribe` state. */
+export function rememberSubscriptions(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  persistSubscriptions(sessionId, [...session.subscriptions]);
+}
+
+/** Drops persisted rows for sessions idle past the timeout (mirrors the in-memory sweep). */
+export function prunePersistedIdleSessions(now = Date.now()): number {
+  return pruneIdleSessions(now - IDLE_TIMEOUT_MS());
 }
 
 /** Test helper: drops the registry without going through the async close path. */
