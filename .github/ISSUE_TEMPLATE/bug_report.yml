@@ -1,0 +1,102 @@
+name: Bug report
+description: Report a reproducible problem with Switchboard
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do not open an issue for a **security** problem - use
+        [private reporting](https://github.com/YOUR_ORG/switchboard/security/advisories/new) instead
+        (see SECURITY.md).
+
+        Redact every secret (client keys, upstream tokens, master key, cookies) before pasting logs.
+
+  - type: input
+    id: version
+    attributes:
+      label: Switchboard version
+      description: From the dashboard, the Settings page, or the /healthz payload.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment method
+      options:
+        - Docker Compose
+        - Docker (docker run)
+        - Local development (npm run dev)
+        - Other / self-built
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Node or Docker version, reverse proxy if any, and the OS/architecture.
+      placeholder: "Docker 27, Traefik 3, Debian 12 arm64"
+    validations:
+      required: false
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      description: Client and version, when the problem involves an agent.
+      placeholder: "Claude Code 2.1 / Codex 0.50 / custom SDK client"
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened instead. Include the exact error text and the HTTP status if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that reliably shows the problem.
+      placeholder: |
+        1. Add an upstream with transport http and auth bearer
+        2. Create a key in selected mode with one tool granted
+        3. Call the tool from the client
+        4. See error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Container or server logs, /healthz output, affected tool names. Secrets redacted.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I removed every secret from the report (keys, tokens, master key, cookies).
+          required: true
+        - label: This is not a security vulnerability (those go through private reporting).
+          required: true

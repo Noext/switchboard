@@ -1,0 +1,20 @@
+services:
+  switchboard:
+    build: .
+    container_name: switchboard
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${SWITCHBOARD_PORT:-3020}:3000"
+    volumes:
+      - /srv/switchboard:/data
+      # Optional: allow stdio MCPs distributed as Docker images.
+      # - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - SWITCHBOARD_DATA_DIR=/data
+      - SWITCHBOARD_PORT=3000
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

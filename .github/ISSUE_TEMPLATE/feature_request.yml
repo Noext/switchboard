@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a capability or an improvement to Switchboard
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem before the solution: what you are trying to do and where the current
+        design gets in the way. Concrete use cases get implemented; "add support for X" alone
+        usually does not.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: The situation you are in and why it is painful today. Mention your deployment shape and the client involved if relevant.
+      placeholder: "I run three agent clients against 8 upstreams and each needs a distinct subset of tools. Today I ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What you would like Switchboard to do. Be concrete about the API, UI or config surface you expect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you tried or thought about, including doing nothing.
+    validations:
+      required: false
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and impact
+      description: Who benefits, and does this touch the access-control model, database schema, MCP surface or UI?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions for this request.
+          required: true

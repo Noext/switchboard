@@ -1,0 +1,62 @@
+{
+  "name": "switchboard",
+  "version": "0.1.0",
+  "description": "One MCP endpoint for every agent: aggregate upstream MCP servers with per-key, per-tool access control.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Noext/switchboard"
+  },
+  "homepage": "https://github.com/Noext/switchboard#readme",
+  "bugs": {
+    "url": "https://github.com/Noext/switchboard/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "gateway",
+    "proxy",
+    "aggregator",
+    "ai-agents",
+    "access-control",
+    "oauth",
+    "nextjs",
+    "typescript"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch server.ts",
+    "build": "next build && node scripts/build-server.mjs",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run test",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "better-sqlite3": "^12.4.1",
+    "drizzle-orm": "^0.44.7",
+    "next": "^16.4.6",
+    "pino": "^10.0.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.25.12",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.18",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
