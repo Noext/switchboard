@@ -1,6 +1,14 @@
 # syntax=docker/dockerfile:1
 FROM node:26-bookworm-slim AS deps
 WORKDIR /app
+
+# better-sqlite3 ships no prebuilt binaries: it always compiles its SQLite binding,
+# so the install stage needs a C++ toolchain and python. These are build-only deps and
+# never reach the runtime image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ ca-certificates \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json* ./
 RUN npm ci --no-audit --no-fund
 
@@ -26,15 +34,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/local/bin/uv /usr/local/bin/uvx \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Non-root user; /data is a bind mount (chown at start with a tiny entrypoint).
+# Non-root user; /data is a bind mount (must be chowned to 1001 by the operator).
 RUN groupadd -g 1001 switchboard && useradd -u 1001 -g switchboard -m -s /bin/sh switchboard \
     && mkdir -p /data && chown -R switchboard:switchboard /data /app
 
 COPY --from=build --chown=switchboard:switchboard /app/.next ./.next
 COPY --from=build --chown=switchboard:switchboard /app/node_modules ./node_modules
 COPY --from=build --chown=switchboard:switchboard /app/dist ./dist
-# public/ may be empty (no static assets yet); create it so the COPY never fails.
-RUN mkdir -p /app/public
 COPY --from=build --chown=switchboard:switchboard /app/public ./public
 COPY --from=build --chown=switchboard:switchboard /app/package.json ./package.json
 COPY --from=build --chown=switchboard:switchboard /app/next.config.ts ./next.config.ts
