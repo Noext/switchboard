@@ -272,6 +272,42 @@ describe("session persistence", () => {
     }
   });
 
+  it("keeps the rows on graceful shutdown, so a restart can rehydrate", async () => {
+    const { client, transport } = await connect(agentSecret);
+    const sid = transport.sessionId!;
+    await client.close();
+
+    const { closeAllSessions, persistedSession, listSessions } = await import("../lib/gateway/sessions");
+    // "shutdown" is the graceful path used by server.ts on SIGTERM.
+    await closeAllSessions("shutdown");
+
+    expect(listSessions()).toHaveLength(0);       // memory detached
+    expect(persistedSession(sid)).not.toBeNull(); // row kept for the next boot
+
+    // ...and the next boot can serve the client again.
+    const t2 = new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+      requestInit: { headers: { authorization: "Bearer " + agentSecret } },
+      sessionId: sid,
+    });
+    const c2 = new Client({ name: "after-shutdown", version: "1.0.0" }, { capabilities: {} });
+    try {
+      await c2.connect(t2);
+      expect((await c2.listTools()).tools.map((t) => t.name)).toContain("toto__A");
+    } finally {
+      await c2.close();
+    }
+  });
+
+  it("still deletes rows for a non-graceful close (tests, forced teardown)", async () => {
+    const { client, transport } = await connect(agentSecret);
+    const sid = transport.sessionId!;
+    await client.close();
+
+    const { closeAllSessions, persistedSession } = await import("../lib/gateway/sessions");
+    await closeAllSessions("test");
+    expect(persistedSession(sid)).toBeNull();
+  });
+
   it("prunes persisted rows idle past the timeout", async () => {
     const { client, transport } = await connect(agentSecret);
     const sid = transport.sessionId!;

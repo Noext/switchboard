@@ -275,10 +275,36 @@ export function stopSessionJanitor(): void {
 }
 
 /** Graceful shutdown: closes every session and stops the janitor. */
+/**
+ * Detaches every live session on shutdown.
+ *
+ * A graceful stop must NOT delete the persisted rows: those rows are precisely what lets a
+ * restarted process rehydrate the clients that are still connected. Only the in-memory objects
+ * are torn down. Genuine closes (client DELETE, revocation, idle timeout) go through
+ * `closeSession` instead, which does delete the row.
+ *
+ * `reason === "shutdown"` keeps the rows; any other reason (tests, forced teardown) deletes them.
+ */
 export async function closeAllSessions(reason = "shutdown"): Promise<void> {
   stopSessionJanitor();
-  const ids = [...sessions.keys()];
-  await Promise.all(ids.map((id) => closeSession(id, reason)));
+  const keepRows = reason === "shutdown";
+  const all = [...sessions.values()];
+  sessions.clear();
+  for (const session of all) {
+    try {
+      await session.server.close();
+    } catch (error) {
+      logger.debug({ sessionId: session.sessionId, err: String(error) }, "MCP server close failed");
+    }
+    try {
+      await session.transport.close();
+    } catch (error) {
+      logger.debug({ sessionId: session.sessionId, err: String(error) }, "MCP transport close failed");
+    }
+    if (!keepRows) deletePersistedSession(session.sessionId);
+    emitUiEvent("session.changed", { action: "close", reason, session: toSummary(session) });
+  }
+  logger.info({ count: all.length, reason, persistedRowsKept: keepRows }, "all MCP sessions detached");
 }
 
 // ---------------------------------------------------------------------------------------------
