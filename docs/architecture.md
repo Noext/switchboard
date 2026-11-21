@@ -82,6 +82,65 @@ calls). The rules now:
 
 `tests/discoverability.test.ts` pins one case per point.
 
+## MCP Events relay (SEP-3415)
+
+Switchboard relays the Events extension rather than implementing it: `events/list`,
+`events/subscribe`, `events/unsubscribe` and `events/poll` are forwarded to the upstreams that
+speak the extension and their answers are merged.
+
+### Why a raw HTTP path instead of the SDK client
+
+Revision **2026-07-28** is a *per-request envelope* protocol: there is no `initialize` handshake
+(an `initialize` sent with that header is rejected as a legacy handshake), and every request must
+carry:
+
+- `MCP-Protocol-Version: 2026-07-28`
+- `Mcp-Method: <method>` (and `Mcp-Name: <params.name>` when there is one)
+- `params._meta` with `io.modelcontextprotocol/protocolVersion` and
+  `io.modelcontextprotocol/clientCapabilities.extensions`
+
+The SDK `Client` (both `1.32.2` and the published `2.4.0`) insists on the legacy handshake: its
+default negotiation mode is `"legacy"`, and against Harbor it reports `2025-11-25` with
+`{tools}` only. Pinning `versionNegotiation` had no effect in testing. The published `2.4.0`
+packages do not export `ext/events` at all (`ext/skills` only).
+
+Harbor solved this by vendoring three packages built from the extension's branch. This project
+deliberately did **not** copy that: vendoring a pre-release fork of three packages is a large,
+invisible liability, while the envelope is small, documented in `lib/gateway/events-protocol.ts`,
+and a raw `fetch` is free to set headers the SDK does not model.
+
+So: legacy traffic keeps using the SDK `Client` unchanged; `events/*` goes through
+`Manager.rawRequest()` in `lib/upstreams/manager.ts`, which reuses the same timeout, abort and
+`handleConnectionLoss` semantics as `callTool`.
+
+### Access control
+
+Identical to `tools/call`: the effective access is re-read from the database, and an upstream the
+key may not use yields `notFoundError` — the same answer as an unknown tool. The relay never
+reveals that a server exists but is not granted. `capabilities.extensions` is derived from the
+upstreams the key can actually reach, so a key with no events-capable upstream gets no block.
+
+### Discovery mode
+
+Events are extension methods, not tools, so they never appear in `tools/list` or in
+`search_tools` — `search_tools` must not pretend otherwise. A client in discovery mode learns
+about them from two places: the `capabilities.extensions` block at `initialize`, and the server
+`instructions`, which name the events-capable upstreams and list the four methods when any exist.
+To discover *which* event types exist, the client calls `events/list`; that is the extension's own
+mechanism and no gateway-side meta-tool is needed.
+
+### Webhook specifics learned against Harbor
+
+- `delivery` is an **object**: `{ mode: "webhook", url, secret }` (or `{ mode: "poll" }`), not the
+  string `"webhook"`.
+- `secret` must be `whsec_` followed by base64 of 24–64 bytes.
+- A webhook receiver on a private address must be listed in the upstream's own allowlist
+  (Harbor: `HARBOR_EVENTS_WEBHOOK_ORIGINS`).
+- Delivered events carry `webhook-id`, `webhook-timestamp` and `webhook-signature`
+  (`v1,<base64>`).
+- Harbor de-duplicates subscriptions per (key, type, url): re-subscribing reuses the existing one,
+  so the verification POST is only sent once.
+
 ## Access model
 
 `computeEffectiveAccess()` in `lib/auth/access.ts` is a **pure function** (no I/O) and is the only
