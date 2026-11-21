@@ -2,6 +2,11 @@ import { and, eq, notInArray } from "drizzle-orm";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { ClientCapabilities, Implementation } from "@modelcontextprotocol/sdk/types.js";
 import { invalidateCatalog } from "../catalog/catalog";
+import {
+  EVENTS_REVISION,
+  eventsNameHeader,
+  withEnvelope,
+} from "../gateway/events-protocol";
 import { buildPublicName } from "../catalog/naming";
 import { getDb, schema } from "../db";
 import { emitUiEvent } from "../events";
@@ -25,6 +30,7 @@ import type {
   CallOptions,
   CallToolOutcome,
   PromptListItem,
+  RawRequestOptions,
   ResourceListItem,
   ResourceTemplateListItem,
   TestConfigInput,
@@ -39,6 +45,21 @@ const { upstreamItems, upstreams, toolDiscoveries, toolSearch } = schema;
 
 /** Max upstreams connected in parallel at boot (spec §4.3). */
 export const START_ALL_CONCURRENCY = 5;
+
+/**
+ * Extracts the JSON-RPC payload from a Streamable HTTP response body.
+ *
+ * A server may answer either a bare JSON body or an SSE frame (`event: message` /
+ * `data: {...}`); both are valid and Harbor uses whichever suits the response.
+ */
+function unwrapSse(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("event:") && !trimmed.startsWith("data:")) return trimmed;
+  for (const line of trimmed.split("\n")) {
+    if (line.startsWith("data:")) return line.slice(5).trim();
+  }
+  return trimmed;
+}
 
 /** Delay applied when an upstream announces a list_changed, to coalesce bursts. */
 const LIST_CHANGED_DEBOUNCE_MS = 250;
@@ -246,6 +267,109 @@ export class Manager implements UpstreamManager {
       if (isTransportFailure(error)) this.handleConnectionLoss(runtime, errorMessage(error));
       throw error;
     }
+  }
+
+/**
+   * Forwards an arbitrary method to the upstream over the raw HTTP path.
+   *
+   * \`events/*\` cannot go through the SDK \`Client\`: that client insists on the legacy
+   * \`initialize\` handshake and reports 2025-11-25, so the extension is never negotiated.
+   * This path speaks the modern per-request envelope directly (lib/gateway/events-protocol.ts
+   * owns the wire details and documents why).
+   *
+   * Failure semantics match \`callTool\`: a transport failure marks the upstream degraded.
+   */
+  async rawRequest(
+    upstreamId: string,
+    method: string,
+    params: Record<string, unknown>,
+    options: RawRequestOptions = {},
+  ): Promise<unknown> {
+    const runtime = await this.connected(upstreamId);
+
+    if (runtime.config.transport === "stdio") {
+      // stdio has no extension support in this build; treat it as "no such method" upstream.
+      throw new Error("upstream " + runtime.config.slug + " cannot serve " + method + " over stdio");
+    }
+    const url = runtime.config.url;
+    if (!url) throw new Error("upstream " + runtime.config.slug + " has no url");
+
+    runtime.health?.noteActivity();
+    const timeoutMs = options.timeoutMs ?? timeoutFor(runtime.config);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onAbort = () => controller.abort();
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      ...(runtime.config.headers ?? {}),
+      ...(options.headers ?? {}),
+      "MCP-Protocol-Version": EVENTS_REVISION,
+      "Mcp-Method": method,
+    };
+    const name = eventsNameHeader(params);
+    if (name) headers["Mcp-Name"] = name;
+
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "sb-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+          method,
+          params: withEnvelope(params),
+        }),
+        signal: controller.signal,
+      });
+
+      const text = await response.text();
+      const payload = unwrapSse(text);
+
+      let message: { result?: unknown; error?: { code?: number; message?: string; data?: unknown } };
+      try {
+        message = JSON.parse(payload);
+      } catch {
+        throw new Error("upstream " + runtime.config.slug + " returned non-JSON for " + method + ": " + text.slice(0, 200));
+      }
+
+      if (message.error) {
+        const err = new Error(message.error.message ?? "upstream error on " + method) as Error & {
+          code?: number;
+          data?: unknown;
+          upstreamSlug?: string;
+        };
+        err.code = message.error.code;
+        err.data = message.error.data;
+        err.upstreamSlug = runtime.config.slug;
+        throw err;
+      }
+      return message.result;
+    } catch (error) {
+      if (isTransportFailure(error)) this.handleConnectionLoss(runtime, errorMessage(error));
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /** Extensions an upstream advertised, normalised from its handshake capabilities. */
+  extensions(upstreamId: string): Record<string, { revision: string }> {
+    const runtime = this.runtimes.get(upstreamId);
+    const raw = (runtime?.capabilities as { extensions?: unknown } | null | undefined)?.extensions;
+    if (!raw || typeof raw !== "object") return {};
+    const out: Record<string, { revision: string }> = {};
+    for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+      const revision =
+        value && typeof value === "object" && typeof (value as { revision?: unknown }).revision === "string"
+          ? (value as { revision: string }).revision
+          : EVENTS_REVISION;
+      out[id] = { revision };
+    }
+    return out;
   }
 
   async ping(upstreamId: string): Promise<boolean> {

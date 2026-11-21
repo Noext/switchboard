@@ -47,6 +47,9 @@ import {
   runReportFeedback,
 } from "./feedbackTool";
 import { buildInstructions, toolsByServerForKey } from "./instructions";
+import { EVENTS_METHODS } from "./events-protocol";
+import { eventsAvailability, extensionsForKey, relayEvents } from "./events-relay";
+import { z } from "zod";
 import { SERVER_NAME, SERVER_VERSION } from "./meta";
 import {
   callPublicTool,
@@ -132,6 +135,12 @@ export function createGatewayServer(state: GatewaySessionState): Server {
         prompts: { listChanged: true },
         resources: { listChanged: true, subscribe: true },
         logging: {},
+        // Derived from the upstreams this key can actually use — never a static list. A key with
+        // no events-capable upstream gets an empty block, so a client is not told the extension
+        // exists when it would answer nothing.
+        ...(Object.keys(extensionsForKey(state.keyId)).length > 0
+          ? { extensions: extensionsForKey(state.keyId) }
+          : {}),
       },
       instructions: buildInstructionsFor(state),
     },
@@ -147,6 +156,24 @@ export function createGatewayServer(state: GatewaySessionState): Server {
       /* client info is cosmetic */
     }
   };
+
+  // --- events/* (MCP Events extension, SEP-3415) ----------------------------------------
+  //
+  // The extension is a set of extension methods, not tools: they are relayed to the upstreams
+  // that speak it (lib/gateway/events-relay.ts). Registration is unconditional so a session that
+  // gains an events-capable upstream mid-life (list_changed) can use it, but every handler
+  // re-resolves the key's access from the DB and refuses an unreachable upstream exactly like
+  // tools/call does.
+  for (const method of EVENTS_METHODS) {
+    server.setRequestHandler(
+      z.object({ method: z.literal(method), params: z.record(z.string(), z.unknown()).optional() }),
+      async (request: { params?: Record<string, unknown> }, extra) => {
+        touchState(state);
+        if (!isKeyUsableNow(state.keyId)) throw notFoundError("tool", method);
+        return (await relayEvents(method, request.params ?? {}, callContext(state, extra))) as never;
+      },
+    );
+  }
 
   // --- tools/list ----------------------------------------------------------------------
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -278,6 +305,7 @@ function buildInstructionsFor(state: GatewaySessionState): string {
       feedbackEnabled: isFeedbackToolAvailable(),
       toolCount: tools.length,
       toolsByServer: toolsByServerForKey(access),
+      eventsUpstreams: eventsAvailability(state.keyId).upstreams,
     });
   } catch {
     return buildInstructions({

@@ -66,6 +66,13 @@ export interface CallOptions {
   onProgress?: (progress: { progress: number; total?: number; message?: string }) => void;
 }
 
+export interface RawRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Extra headers merged over the upstream's configured ones (e.g. Mcp-Name). */
+  headers?: Record<string, string>;
+}
+
 /**
  * The contract implemented by lib/upstreams/manager.ts. Everything that talks to an
  * upstream (gateway, API, UI test console) goes through this interface.
@@ -96,6 +103,21 @@ export interface UpstreamManager {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<CallToolOutcome>;
+  /**
+   * Forwards an arbitrary JSON-RPC method + params to the upstream and returns the raw result.
+   *
+   * Used for MCP extension methods (`events/*`) that the SDK `Client` cannot express. The
+   * implementation must keep the same failure semantics as `callTool`: a transport failure marks
+   * the upstream degraded and rejects.
+   */
+  rawRequest(
+    upstreamId: string,
+    method: string,
+    params: Record<string, unknown>,
+    options?: RawRequestOptions,
+  ): Promise<unknown>;
+  /** The extensions an upstream advertised during its handshake, e.g. events @ 2026-07-28. */
+  extensions(upstreamId: string): Record<string, { revision: string }>;
   ping(upstreamId: string): Promise<boolean>;
 
   listPrompts(upstreamId: string): Promise<PromptListItem[]>;

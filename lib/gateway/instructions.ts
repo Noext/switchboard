@@ -13,6 +13,7 @@ import { effectiveAccessForKey } from "../auth/grants";
 import type { EffectiveAccess } from "../types";
 import { visibleTools } from "./router";
 import { isFeedbackToolAvailable } from "./feedbackTool";
+import { eventsAvailability } from "./events-relay";
 
 export interface InstructionsInput {
   access: EffectiveAccess | null;
@@ -22,6 +23,8 @@ export interface InstructionsInput {
   toolCount: number;
   /** Public tool names per upstream slug, used to seed discovery mode with real examples. */
   toolsByServer?: Array<{ slug: string; name: string; description: string | null; tools: string[] }>;
+  /** Upstream slugs exposing the MCP Events extension for this key. */
+  eventsUpstreams?: string[];
 }
 
 /** One-line role of an upstream: its admin description, else its name and tool count. */
@@ -111,6 +114,32 @@ export function buildInstructions(input: InstructionsInput): string {
     );
   }
 
+  // Events extension (SEP-3415). These are extension methods, not tools, so they never appear in
+  // tools/list or in search_tools — the capability block is the only way a client learns about
+  // them. Say so explicitly, otherwise an agent in discovery mode has no way to find them.
+  if (input.eventsUpstreams && input.eventsUpstreams.length > 0) {
+    lines.push("");
+    lines.push(
+      "Extension MCP Events (" +
+        input.eventsUpstreams.join(", ") +
+        ") : ce ne sont PAS des outils, elles n'apparaissent donc pas dans la liste des outils" +
+        (input.discovery ? " (ni dans search_tools)" : "") +
+        ".",
+    );
+    lines.push(
+      "Annoncée dans capabilities.extensions[\"io.modelcontextprotocol/events\"] (révision 2026-07-28). Méthodes :",
+    );
+    lines.push("1. events/list — les types d'événements disponibles, avec leur payloadSchema (filtre : {upstream}).");
+    lines.push(
+      "2. events/subscribe({name, delivery}) — delivery est un OBJET : {mode:\"webhook\", url, secret} ou {mode:\"poll\"}.",
+    );
+    lines.push("3. events/poll({subscriptionId}) — relève les événements en attente (mode poll).");
+    lines.push("4. events/unsubscribe({subscriptionId}).");
+    lines.push(
+      "Quand plusieurs serveurs exposent des événements, précise « upstream » dans les paramètres.",
+    );
+  }
+
   if (input.feedbackEnabled) {
     lines.push("");
     lines.push(
@@ -155,7 +184,17 @@ export function instructionsFor(access: EffectiveAccess | null, discovery: boole
     feedbackEnabled: isFeedbackToolAvailable(),
     toolCount: access?.publicTools.length ?? 0,
     toolsByServer: toolsByServerForKey(access),
+    eventsUpstreams: access ? eventsUpstreamsForKey(access.keyId) : [],
   });
+}
+
+/** Upstream slugs exposing MCP Events for this key (empty when none). */
+function eventsUpstreamsForKey(keyId: string): string[] {
+  try {
+    return eventsAvailability(keyId).upstreams;
+  } catch {
+    return [];
+  }
 }
 
 /** Recomputes the instructions straight from the DB (used after an `initialize`). */
