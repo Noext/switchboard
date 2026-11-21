@@ -67,6 +67,37 @@ works, but browsers and some clients will treat the admin session as insecure �
 [docs/deploy.md](docs/deploy.md) for the proxy configuration, including the SSE settings that
 `GET /mcp` needs.
 
+## Docker Hub rate limits
+
+`docker compose build` pulls `node:26-bookworm-slim`, and Docker Hub throttles **anonymous** pulls
+hard (`429 Too Many Requests`). On a shared IP you *will* hit this — a rebuild then fails in the
+middle of a deploy, before any of your code is even compiled.
+
+Pick one, once:
+
+**Recommended — log in (raises the limit substantially):**
+
+```bash
+docker login                      # a free Docker Hub account is enough
+```
+
+**Or pull the base image from the AWS mirror and tag it locally.** A locally tagged image is never
+re-pulled, so the build works offline from Docker Hub:
+
+```bash
+docker pull public.ecr.aws/docker/library/node:26-bookworm-slim
+docker tag public.ecr.aws/docker/library/node:26-bookworm-slim node:26-bookworm-slim
+docker compose build
+```
+
+Notes:
+
+- `docker.mirror.gcr.io` is **not** a usable fallback: its TLS certificate does not match that
+  hostname.
+- `public.ecr.aws/docker/library/*` mirrors the official images and is not rate-limited the same way.
+- If you deploy to a remote host, do this on that host (or in your registry cache), not only
+  locally: the build runs where `docker compose build` runs.
+
 ## Configure an agent
 
 Create a key in the UI first. The secret (`sk-sw-…`) is shown **once** at creation; copy it then.

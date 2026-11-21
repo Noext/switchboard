@@ -99,15 +99,18 @@ carry:
 - `params._meta` with `io.modelcontextprotocol/protocolVersion` and
   `io.modelcontextprotocol/clientCapabilities.extensions`
 
-The SDK `Client` (both `1.32.2` and the published `2.4.0`) insists on the legacy handshake: its
-default negotiation mode is `"legacy"`, and against Harbor it reports `2025-11-25` with
-`{tools}` only. Pinning `versionNegotiation` had no effect in testing. The published `2.4.0`
-packages do not export `ext/events` at all (`ext/skills` only).
+**The SDK `Client` 1.x cannot negotiate 2026-07-28.** It insists on the legacy handshake, defaults
+to negotiation mode `"legacy"`, and against Harbor it reports `2025-11-25` with `{tools}` only.
+We looked for a way to force the modern revision and **did not find one**: the published `2.4.0`
+packages expose `versionNegotiation` (`mode: "auto"` / `{ pin: "2026-07-28" }`) and neither
+changed the negotiated version when tried; the 1.x line has no such option. The published
+`2.4.0` packages also do not export `ext/events` at all (`ext/skills` only).
 
-Harbor solved this by vendoring three packages built from the extension's branch. This project
-deliberately did **not** copy that: vendoring a pre-release fork of three packages is a large,
-invisible liability, while the envelope is small, documented in `lib/gateway/events-protocol.ts`,
-and a raw `fetch` is free to set headers the SDK does not model.
+Harbor worked around it by vendoring three packages built from the extension's branch. This
+project deliberately did **not** copy that: vendoring a pre-release fork of three packages is a
+large, invisible liability, while the envelope is small, documented in
+`lib/gateway/events-protocol.ts`, and a raw `fetch` is free to set headers the SDK does not
+model.
 
 So: legacy traffic keeps using the SDK `Client` unchanged; `events/*` goes through
 `Manager.rawRequest()` in `lib/upstreams/manager.ts`, which reuses the same timeout, abort and

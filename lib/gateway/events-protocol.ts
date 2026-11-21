@@ -14,13 +14,18 @@
  *   - `params._meta` with the protocol version and the client's capabilities,
  * including the extensions the client knows.
  *
- * The SDK's `Client` (both 1.32.2 and the published 2.4.0) insists on the legacy `initialize`
- * handshake: its default negotiation mode is `"legacy"` and it reports 2025-11-25, which makes
- * Harbor answer `{tools}` only — the extension is never advertised. Pinning
- * `versionNegotiation` did not change the negotiated version in testing. The vendored build in
- * Harbor's repo does speak the modern revision, but vendoring a pre-release fork of three
- * packages into this project was judged worse than 80 lines of explicit HTTP: the wire format is
- * small, documented and stable, and a raw path is free to pass headers the SDK does not model.
+ * The SDK `Client` 1.x **cannot negotiate 2026-07-28**. It insists on the legacy `initialize`
+ * handshake, defaults to negotiation mode `"legacy"`, and reports `2025-11-25` against Harbor,
+ * which then answers `{tools}` only — the extension is never advertised. We looked for a switch
+ * to force the modern revision and **did not find one**: `connect(transport, {versionNegotiation})`
+ * exists in the published 2.4.0 packages (`mode: "auto"` / `{pin: "2026-07-28"}`), and neither
+ * changed the negotiated version when tried; the 1.x line we depend on has no such option at all.
+ * The published 2.4.0 packages also do not export `ext/events`.
+ *
+ * So this is a limitation, not a preference: the SDK cannot make this call, and a raw HTTP path is
+ * the only way to speak the modern envelope. It is also the honest one — ~80 lines we control,
+ * against vendoring a pre-release fork of three packages as Harbor does. The wire format is small
+ * and documented; a raw path can set headers the SDK does not model.
  *
  * So: legacy traffic (tools/prompts/resources) keeps using the SDK `Client`; `events/*` uses the
  * raw path below. Nothing about the legacy path changes.

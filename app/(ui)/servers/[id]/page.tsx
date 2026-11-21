@@ -20,6 +20,7 @@ import { duration, relTime, absTime } from "@/components/format";
 import { AccessEditor } from "@/components/access/access-editor";
 import { ItemOverridesPanel } from "./item-overrides";
 import { ServerActions, TestConsole, StderrPanel, OAuthPanel, AccessSection } from "./server-tabs";
+import { EventsPanel } from "./events-panel";
 
 export const metadata: Metadata = { title: "Serveur — Switchboard" };
 export const dynamic = "force-dynamic";
@@ -29,6 +30,7 @@ const TABS = [
   { id: "prompts", label: "Prompts" },
   { id: "resources", label: "Ressources" },
   { id: "access", label: "Accès" },
+  { id: "events", label: "Événements" },
   { id: "console", label: "Console" },
   { id: "stderr", label: "stderr" },
   { id: "logs", label: "Journal" },
@@ -278,6 +280,8 @@ export default async function ServerDetailPage({
             </Card>
           </div>
         ) : null}
+
+        {activeTab === "events" ? <EventsPanel upstreamId={row.id} upstreamSlug={row.slug} /> : null}
 
         {activeTab === "console" ? (
           <Card>
