@@ -102,20 +102,27 @@ export function listToolsFor(
   // where a request is still in flight (§6.1/§10).
   if (!isKeyUsableNow(keyId)) return { tools: [], discovery: false, toolCount: 0 };
 
-  // An admin key manages upstreams; it never borrows an upstream's tools. This is the whole point
-  // of the split (lib/gateway/adminTools.ts): gaining management power must not widen data access.
-  if (isAdminKey(keyId)) {
-    // `report_feedback` belongs to the gateway, not to an upstream, so it stays available here.
-    // The admin instructions mention it: list and instructions must agree, or an agent is told
-    // about a tool it cannot see.
-    const adminTools: Tool[] = [...ADMIN_TOOLS];
-    if (isFeedbackToolAvailable()) adminTools.push(REPORT_FEEDBACK_TOOL);
-    return { tools: adminTools, discovery: false, toolCount: ADMIN_TOOLS.length };
-  }
-
   const tools = visibleTools(keyId);
   const discovery = isDiscoveryMode(exposureMode, tools.length);
-  const out: Tool[] = discovery ? [...DISCOVERY_TOOLS] : tools.map(toMcpTool);
+  let out: Tool[];
+  if (isAdminKey(keyId)) {
+    // An admin key gets its management tools ON TOP of whatever its grants give it — never
+    // instead of them.
+    //
+    // This used to be a hard split ("an admin key never sees an upstream tool"), which was wrong
+    // in practice: the operator's own key is an admin key, so replacing an agent key with an admin
+    // one silently removed all 89 upstream tools from the client. Scope answers "may I manage the
+    // gateway?"; grants answer "which upstreams may I call?". They are orthogonal, and an admin
+    // key still cannot call an upstream it was not granted (router.ts re-checks the access from
+    // the DB on every call).
+    //
+    // Real admin tools are listed even in discovery mode: they are few, and an admin needs them to
+    // be discoverable without going through search_tools.
+    out = [...ADMIN_TOOLS];
+    if (!discovery) out.push(...tools.map(toMcpTool));
+  } else {
+    out = discovery ? [...DISCOVERY_TOOLS] : tools.map(toMcpTool);
+  }
   if (isFeedbackToolAvailable()) out.push(REPORT_FEEDBACK_TOOL);
   return { tools: out, discovery, toolCount: tools.length };
 }
@@ -342,11 +349,24 @@ const ADMIN_INSTRUCTIONS = [
 
 /** Instructions text for a session, built from the key's live access (§6.1). */
 function buildInstructionsFor(state: GatewaySessionState): string {
-  // An admin key must not be told about upstream tools it can never call.
-  if (isAdminKey(state.keyId)) return ADMIN_INSTRUCTIONS;
   try {
     const access = effectiveAccessForKey(state.keyId);
     const tools = visibleTools(state.keyId);
+    // An admin key reads the upstream inventory like any other key, with the management tools
+    // appended: it can both call what it was granted and manage the gateway. Telling it only
+    // about the admin tools is what made an admin key look like it had lost every upstream.
+    if (isAdminKey(state.keyId)) {
+      const base = buildInstructions({
+        access,
+        snapshot: getCatalogSnapshot(),
+        discovery: isDiscoveryMode(state.exposureMode, tools.length),
+        feedbackEnabled: false,
+        toolCount: tools.length,
+        toolsByServer: toolsByServerForKey(access),
+        eventsUpstreams: eventsAvailability(state.keyId).upstreams,
+      });
+      return base + "\n\n" + ADMIN_INSTRUCTIONS;
+    }
     return buildInstructions({
       access,
       snapshot: getCatalogSnapshot(),

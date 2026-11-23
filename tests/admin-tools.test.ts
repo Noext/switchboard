@@ -89,6 +89,59 @@ describe("admin tool surface", () => {
     }
   });
 
+
+describe("an admin key keeps its upstream tools (regression)", () => {
+  /**
+   * The bug: listToolsFor() returned ONLY the admin tools for a scope=admin key, so replacing an
+   * agent key with an admin key silently removed every upstream tool from the client (89 -> 5 in
+   * production). Scope answers "may I manage the gateway?"; grants answer "which upstreams may I
+   * call?". The two are orthogonal and must compose, not exclude each other.
+   */
+  it("lists admin tools AND the upstream tools its grants allow", async () => {
+    const { upsertGrant } = await import("../lib/auth/grants");
+    const { upstreams, upstreamItems } = await import("../lib/db/schema");
+    const now = Date.now();
+    dbmod.getDb().insert(upstreams).values({
+      id: "u-admin", slug: "adm", name: "Adm", transport: "http", url: "http://127.0.0.1:9/mcp",
+      authType: "none", enabled: true, startMode: "always", status: "ready",
+      createdAt: now, updatedAt: now,
+    }).run();
+    dbmod.getDb().insert(upstreamItems).values({
+      upstreamId: "u-admin", kind: "tool", name: "do_it",
+      definition: { name: "do_it", description: "Upstream tool", inputSchema: { type: "object", properties: {} } },
+      fetchedAt: now,
+    }).run();
+    upsertGrant({ subjectType: "key", subjectId: adminKeyId, upstreamId: "u-admin", toolMode: "all", tools: [] });
+
+    const { invalidateCatalog } = await import("../lib/catalog/catalog");
+    invalidateCatalog("test");
+
+    const { client, close } = await connectFor(adminKeyId);
+    try {
+      const { tools } = await client.listTools();
+      const names = tools.map((t) => t.name);
+      // Management surface still there...
+      expect(names).toContain("upstream_create");
+      // ...and the granted upstream tool is no longer hidden.
+      expect(names).toContain("adm__do_it");
+      const instructions = client.getInstructions() ?? "";
+      expect(instructions).toContain("adm");
+      expect(instructions).toContain("upstream_create");
+    } finally {
+      await close();
+    }
+  });
+
+  it("still refuses an upstream tool the admin key was not granted", async () => {
+    const { client, close } = await connectFor(adminKeyId);
+    try {
+      // u-ungranted has a tool but no grant for this key: same error as an unknown tool.
+      await expect(client.callTool({ name: "toto__A", arguments: {} })).rejects.toThrow(/not found/i);
+    } finally {
+      await close();
+    }
+  });
+});
   it("gives an agent key none of the admin tools", async () => {
     const agent = await connectFor(
       (await import("../lib/auth/keys")).listKeys().find((k) => k.name === "admin-tools-agent")!.id,
