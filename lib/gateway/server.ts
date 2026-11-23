@@ -116,10 +116,13 @@ export function listToolsFor(
     // key still cannot call an upstream it was not granted (router.ts re-checks the access from
     // the DB on every call).
     //
-    // Real admin tools are listed even in discovery mode: they are few, and an admin needs them to
-    // be discoverable without going through search_tools.
+    // In DISCOVERY mode the upstream tools are not listed directly: they are reached through
+    // call_tool/search_tools/list_servers. Those meta-tools must therefore stay in the list, or an
+    // admin key loses every upstream tool it was granted — the key has 89 tools, the threshold is
+    // 60, so a real admin key IS in discovery mode. Adding the admin tools must never take the
+    // meta-tools away.
     out = [...ADMIN_TOOLS];
-    if (!discovery) out.push(...tools.map(toMcpTool));
+    out.push(...(discovery ? DISCOVERY_TOOLS : tools.map(toMcpTool)));
   } else {
     out = discovery ? [...DISCOVERY_TOOLS] : tools.map(toMcpTool);
   }

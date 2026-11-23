@@ -132,6 +132,46 @@ describe("an admin key keeps its upstream tools (regression)", () => {
     }
   });
 
+
+describe("admin key in DISCOVERY mode (the 89-tool regression)", () => {
+  /**
+   * A real key has 89 tools while the discovery threshold is 60, so it is in discovery mode. In
+   * that mode upstream tools are NOT listed directly — they are reached via call_tool/search_tools.
+   * An earlier fix added the admin tools but dropped those meta-tools, so the key could no longer
+   * reach harbor or linear at all. Admin tools must be additive in BOTH modes.
+   */
+  it("keeps the discovery meta-tools alongside the admin tools", async () => {
+    const { visibleTools } = await import("../lib/gateway/router");
+    const { listToolsFor } = await import("../lib/gateway/server");
+
+    // Put the key over the threshold (60) the same way production is. The key already holds the
+    // u-admin grant from the previous test; adding stub tools is the cheapest way to cross it.
+    const { upstreamItems } = await import("../lib/db/schema");
+    const now = Date.now();
+    for (let i = 0; i < 70; i++) {
+      dbmod.getDb().insert(upstreamItems).values({
+        upstreamId: "u-admin", kind: "tool", name: "bulk_" + i,
+        definition: { name: "bulk_" + i, inputSchema: { type: "object", properties: {} } },
+        fetchedAt: now,
+      }).run();
+    }
+    const { invalidateCatalog } = await import("../lib/catalog/catalog");
+    invalidateCatalog("test-bulk");
+
+    const count = visibleTools(adminKeyId).length;
+    expect(count).toBeGreaterThan(60);
+
+    const { tools, discovery } = listToolsFor(adminKeyId, "direct");
+    const names = tools.map((t) => t.name);
+    expect(discovery).toBe(true);
+    // Admin surface...
+    expect(names).toContain("upstream_create");
+    // ...AND the escape hatch to the upstreams, which is the whole point.
+    expect(names).toContain("call_tool");
+    expect(names).toContain("search_tools");
+    expect(names).toContain("list_servers");
+  });
+});
   it("still refuses an upstream tool the admin key was not granted", async () => {
     const { client, close } = await connectFor(adminKeyId);
     try {
