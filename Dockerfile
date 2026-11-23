@@ -34,6 +34,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/local/bin/uv /usr/local/bin/uvx \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# Docker CLI only (no daemon): lets a stdio MCP be spawned as a container, e.g.
+# `docker exec -i flashbrowse flashbrowse mcp`. The socket must be mounted for this to work
+# (see docker-compose.yml); without it the CLI is inert.
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Non-root user; /data is a bind mount (must be chowned to 1001 by the operator).
 RUN groupadd -g 1001 switchboard && useradd -u 1001 -g switchboard -m -s /bin/sh switchboard \
     && mkdir -p /data && chown -R switchboard:switchboard /data /app
