@@ -175,13 +175,9 @@ export function authorizeMcp(req: IncomingMessage, res: ServerResponse): McpAuth
     sendJson(res, 401, { error: result.reason, message: messages[result.reason] });
     return null;
   }
-  if (result.key.scope === "admin") {
-    sendJson(res, 403, {
-      error: "forbidden",
-      message: "Une clé de portée admin ne peut pas utiliser /mcp : elle sert uniquement à l'API d'administration.",
-    });
-    return null;
-  }
+  // An admin key IS allowed on /mcp, but only to manage upstreams (lib/gateway/adminTools.ts):
+  // it gets the fixed admin tool surface and never an upstream tool. The split is enforced in
+  // listToolsFor() and on every tools/call, not here — the transport layer only authenticates.
   return { keyId: result.key.id, keyName: result.key.name, exposureMode: result.key.exposureMode };
 }
 

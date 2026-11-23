@@ -41,6 +41,12 @@ import {
   runSearchTools,
 } from "./discovery";
 import {
+  ADMIN_TOOLS,
+  ADMIN_TOOL_NAMES,
+  isAdminKey,
+  runAdminTool,
+} from "./adminTools";
+import {
   REPORT_FEEDBACK_NAME,
   REPORT_FEEDBACK_TOOL,
   isFeedbackToolAvailable,
@@ -95,6 +101,17 @@ export function listToolsFor(
   // already answers 401 and the revocation listener closes the session; this covers the window
   // where a request is still in flight (§6.1/§10).
   if (!isKeyUsableNow(keyId)) return { tools: [], discovery: false, toolCount: 0 };
+
+  // An admin key manages upstreams; it never borrows an upstream's tools. This is the whole point
+  // of the split (lib/gateway/adminTools.ts): gaining management power must not widen data access.
+  if (isAdminKey(keyId)) {
+    // `report_feedback` belongs to the gateway, not to an upstream, so it stays available here.
+    // The admin instructions mention it: list and instructions must agree, or an agent is told
+    // about a tool it cannot see.
+    const adminTools: Tool[] = [...ADMIN_TOOLS];
+    if (isFeedbackToolAvailable()) adminTools.push(REPORT_FEEDBACK_TOOL);
+    return { tools: adminTools, discovery: false, toolCount: ADMIN_TOOLS.length };
+  }
 
   const tools = visibleTools(keyId);
   const discovery = isDiscoveryMode(exposureMode, tools.length);
@@ -192,6 +209,15 @@ export function createGatewayServer(state: GatewaySessionState): Server {
     // (Upstream tools are covered by the router's access check; this closes the gap for the
     // meta-tools, which belong to no upstream.)
     if (!isKeyUsableNow(state.keyId)) throw notFoundError("tool", name);
+
+    // --- admin meta-tools ----------------------------------------------------------------
+    // Re-checked per call from the DB, like every other access decision: a key demoted from
+    // admin mid-session stops answering these immediately. ADMIN_TOOL_NAMES is a closed set,
+    // so a non-admin key can never reach an upstream tool through this branch.
+    if (ADMIN_TOOL_NAMES.includes(name)) {
+      if (!isAdminKey(state.keyId)) throw notFoundError("tool", name);
+      return (await runAdminTool(name, args, state.keyName)) as CallToolResult;
+    }
 
     if (name === REPORT_FEEDBACK_NAME) {
       if (!isFeedbackToolAvailable()) throw notFoundError("tool", name);
@@ -293,8 +319,31 @@ export function createGatewayServer(state: GatewaySessionState): Server {
   return server;
 }
 
+/** Admin keys read a short, purpose-built inventory: their tools are not upstream tools. */
+const ADMIN_INSTRUCTIONS = [
+  "Cette clé a la portée admin : elle sert à GÉRER les serveurs MCP du gateway, pas à appeler leurs outils.",
+  "",
+  "Outils de gestion (toujours disponibles) :",
+  "1. upstream_list({}) — les upstreams configurés (id, slug, transport, statut, nombre d'outils).",
+  "2. upstream_get({id}) — la configuration complète d'un upstream ; les secrets sont réduits à leurs noms de clés.",
+  "3. upstream_create({name, transport, url|command, ...}) — ajoute un serveur MCP.",
+  "   transport=http|sse exige url ; transport=stdio exige command (+ args, cwd, env).",
+  "4. upstream_update({id, ...}) — modifie un upstream ; seuls les champs fournis changent.",
+  "",
+  "Règles à connaître :",
+  "- Les secrets ne sont JAMAIS renvoyés : envKeys et headerKeys ne donnent que des noms.",
+  "- env et headers sont remplacés en bloc quand tu les fournis ; omets-les pour les conserver.",
+  "- Le slug doit faire 1-12 caractères [a-z0-9] ; il est dérivé du nom si tu l'omets.",
+  "- Suppression, redémarrage et test de connexion ne sont pas exposés : ils restent en UI/API REST.",
+  "- upstream_create renvoie tout de suite ; la connexion se fait en arrière-plan, revérifie avec upstream_get.",
+  "",
+  "report_feedback reste disponible pour signaler un problème à l'administrateur.",
+].join("\n");
+
 /** Instructions text for a session, built from the key's live access (§6.1). */
 function buildInstructionsFor(state: GatewaySessionState): string {
+  // An admin key must not be told about upstream tools it can never call.
+  if (isAdminKey(state.keyId)) return ADMIN_INSTRUCTIONS;
   try {
     const access = effectiveAccessForKey(state.keyId);
     const tools = visibleTools(state.keyId);

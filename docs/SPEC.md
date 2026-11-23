@@ -231,7 +231,8 @@ settings { key, value }
   stream on `GET` for notifications. Advertised capabilities: `tools.listChanged`,
   `prompts.listChanged`, `resources.listChanged` + `subscribe`, `logging`.
 - Auth: `Authorization: Bearer sk-sw-…` → key → effective view (§7.3). Missing, unknown, revoked or
-  expired → `401`. `scope=admin` key → `403` on `/mcp`. Revoking a key closes its open sessions
+  expired → `401`. A `scope=admin` key is accepted, but receives the admin tool surface instead
+  of upstream tools (§6.6). Revoking a key closes its open sessions
   immediately.
 - Idle sessions (24 h) are closed. After a gateway restart, clients re-initialize (an unknown session
   id yields `404`, which conformant clients handle by creating a new session).
@@ -320,8 +321,31 @@ other channel to learn what is broken on the agent side.
 - **Response**: `{ id, status: "recorded" | "merged", message: "…" }`.
 - `high` and `blocking` reports can trigger an **Apprise** notification if a URL is configured.
 
----
+### 6.6 Admin tools (automation over MCP)
 
+A `scope=admin` key is accepted on `/mcp` but gets a small, fixed tool surface instead of upstream
+tools. Refusing it there would leave the most common automation — *an agent adds an MCP server for
+me* — with no path through the gateway: it would have to speak the REST API, which an MCP client
+cannot discover.
+
+- **Surface** (closed set, `lib/gateway/adminTools.ts`): `upstream_list`, `upstream_get`,
+  `upstream_create`, `upstream_update`.
+- **Isolation**: an admin key never sees an upstream tool. Its effective access is empty by
+  construction, so gaining management power never widens access to somebody else's server.
+- **No destructive actions**: delete, restart and connection-test are deliberately absent. They are
+  one-way or disruptive, and an agent that can silently delete an upstream can take the gateway down;
+  they stay on the REST API and in the UI, behind a human.
+- **Secrets never leave**: `upstream_get` reduces `env` and `headers` to their key *names*
+  (`envKeys`, `headerKeys`). Supplying `env`/`headers` on update replaces the whole map; omitting them
+  keeps it.
+- **Input errors are tool errors**: a missing `url`/`command` or an unknown `id` returns an
+  `isError` result naming the field, not a JSON-RPC fault — an agent can read it and correct itself.
+- **Re-checked per call**: the key scope is read from the DB on every call, like any access decision,
+  so a key demoted from admin loses the tools mid-session.
+- `upstream_create` returns immediately; the connection happens in the background, so the status is
+  normally `connecting` and is confirmed with `upstream_get`.
+
+---
 ## 7. Keys, roles and access control
 
 Everything is denied by default: a key only sees and calls what it has been granted.
@@ -337,7 +361,8 @@ Everything is denied by default: a key only sees and calls what it has been gran
   and grants), edit name/description/expiry/mode.
 - Per-key tracking: last use, open sessions (client, version, IP, since), calls over 24 h / 7 d,
   denials over 24 h.
-- `scope=admin` keys are for the admin API (automation) and have no tool access.
+- `scope=admin` keys are for the admin API (automation) and, over MCP, for the admin tools of
+  §6.6. They never see an upstream's tools.
 
 ### 7.2 Roles
 

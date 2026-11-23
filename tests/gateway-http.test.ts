@@ -199,12 +199,28 @@ describe("/mcp authentication (spec §6.1)", () => {
     expect(response.status).toBe(401);
   });
 
-  it("403 for an admin-scope key", async () => {
-    const response = await fetch(base + "/mcp", {
-      method: "POST",
-      headers: { authorization: "Bearer " + adminSecret },
+  /**
+   * An admin key is accepted on /mcp, but the session it opens serves the admin tool surface,
+   * never an upstream tool (lib/gateway/adminTools.ts). Previously this was a blanket 403.
+   */
+  it("accepts an admin-scope key and gives it only the admin tools", async () => {
+    const client = new Client({ name: "admin-http", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(base + "/mcp"), {
+      requestInit: { headers: { authorization: "Bearer " + adminSecret } },
     });
-    expect(response.status).toBe(403);
+    await client.connect(transport);
+    try {
+      const { tools } = await client.listTools();
+      const names = tools.map((t) => t.name).sort();
+      expect(names).toContain("upstream_create");
+      expect(names).toContain("upstream_update");
+      expect(names).toContain("upstream_list");
+      expect(names).toContain("upstream_get");
+      // The agent key's upstream tool must never leak into an admin session.
+      expect(names).not.toContain("toto__A");
+    } finally {
+      await client.close();
+    }
   });
 
   it("400 for a POST without a session that is not an initialize request", async () => {
