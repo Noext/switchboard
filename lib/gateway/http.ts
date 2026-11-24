@@ -197,6 +197,11 @@ export async function openSession(auth: McpAuth, ip: string | null): Promise<Gat
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
+    // Without this the SDK applies its own 4 MiB default and answers 413 before the
+    // call reaches the tool — a limit far below what Harbor accepts upstream (64 MiB
+    // bundles) and below what agents legitimately relay (a 15 MB bundle is ~20 MB of
+    // base64). Keep the transport at least as permissive as the narrowest upstream.
+    maxRequestBodySize: config.defaults.maxRequestBodyBytes,
     // SDK-native SSE keep-alive: comment frames on idle GET streams (spec §11.4).
     keepAliveMs: config.defaults.sseKeepAliveMs,
     onsessioninitialized: (sessionId: string) => {

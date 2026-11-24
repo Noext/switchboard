@@ -58,6 +58,20 @@ export const config = {
     maxCallsPerMinutePerKey: 300,
     sseKeepAliveMs: 25_000,
     oauthStateTtlMs: 10 * 60 * 1000,
+    /**
+     * Upper bound on an MCP POST body, in bytes (spec §11.4).
+     *
+     * The SDK's own default is 4 MiB, and it is far too small for what agents send THROUGH
+     * this gateway: a 15 MB git bundle is ~20 MB of base64, and Harbor deliberately accepts
+     * 64 MiB bundles. The relay was therefore stricter than every upstream behind it, and
+     * the symptom was silent: the client got "Payload Too Large: ... 4194304 bytes" from a
+     * layer it never chose, then worked around the gateway by serving the payload over HTTP
+     * from the host into the sandbox — solving Switchboard's problem with the caller's time.
+     *
+     * Sized above the largest upstream request Harbor accepts so the narrowest limit an
+     * agent meets is the one the tool descriptions advertise.
+     */
+    maxRequestBodyBytes: 128 * 1024 * 1024,
   },
 };
 
