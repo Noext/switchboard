@@ -14,7 +14,7 @@
  * bodies: a constant comparison would pass even with the option misspelled.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type IncomingMessage, type ServerResponse, type Server as HttpServer } from "node:http";
@@ -224,6 +224,19 @@ describe("MCP request body limit", () => {
     // 15 MiB is the size that started the incident: refused with 413 before.
     const status = await postPaddedCall(sessionId, 15 * 1024 * 1024);
     expect(status).toBe(200);
+  });
+
+  it("applies the limit to EVERY transport, not just the primary one", async () => {
+    // A session rehydrated after a restart goes through a second construction of
+    // StreamableHTTPServerTransport. It was missed, so the same call succeeded,
+    // then answered 413 after a deploy when the client reconnected onto a
+    // rehydrated session. Pin the rule: no transport may be built without it.
+    const source = readFileSync(new URL("../lib/gateway/http.ts", import.meta.url), "utf8");
+    const constructions = source.match(/new StreamableHTTPServerTransport\(\{[\s\S]*?\}\)/g) ?? [];
+    expect(constructions.length).toBeGreaterThanOrEqual(2);
+    for (const construction of constructions) {
+      expect(construction).toContain("maxRequestBodySize");
+    }
   });
 
   it("still refuses a body above its own bound, so the limit is real", async () => {

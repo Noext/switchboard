@@ -270,6 +270,11 @@ export async function rehydrateSession(
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => persisted.sessionId,
     keepAliveMs: config.defaults.sseKeepAliveMs,
+    // MUST match the primary transport: a session rehydrated after a restart takes this
+    // code path, and without the option it falls back to the SDK's 4 MiB default. The
+    // symptom is the worst kind — the same call works, then fails with 413 after a
+    // deploy, when the client reconnects onto a rehydrated session.
+    maxRequestBodySize: config.defaults.maxRequestBodyBytes,
   });
 
   // Seed the transport's view: it must consider the session initialised and owned.
