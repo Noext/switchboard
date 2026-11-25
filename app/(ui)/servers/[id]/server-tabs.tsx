@@ -191,7 +191,7 @@ export function TestConsole({
           Le serveur n&apos;a publié aucun outil, ou il n&apos;est pas connecté. Lancez un test de connexion depuis l&apos;en-tête.
         </Callout>
       ) : null}
-      <div className="grid gap-3 sm:grid-cols-[minmax(0,320px)_1fr]">
+      <div className="grid gap-3 sm:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
         <div className="flex flex-col gap-2">
           <Field label="Outil">
             <Select

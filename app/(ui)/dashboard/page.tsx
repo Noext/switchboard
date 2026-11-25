@@ -124,7 +124,7 @@ export default async function DashboardPage() {
         <Stat label="Retours ouverts" value={num(fb.open)} hint={fb.bySeverity.blocking + " bloquant(s)"} tone={fb.bySeverity.blocking ? "bad" : "default"} />
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-[1.35fr_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
         <div className="flex flex-col gap-3">
           <Card>
             <CardHeader

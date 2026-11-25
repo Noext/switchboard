@@ -86,7 +86,7 @@ export default async function FeedbackDetailPage({ params }: { params: Promise<{
         </span>
       </div>
 
-      <div className="grid gap-3 lg:grid-cols-[1.5fr_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <div className="flex flex-col gap-3">
           <Card>
             <CardHeader title="Description" subtitle="Texte fourni par l'agent (secrets masqués)." />

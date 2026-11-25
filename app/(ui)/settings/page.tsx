@@ -46,7 +46,7 @@ export default async function SettingsPage() {
         description="URL publique, rétention des journaux, notifications Apprise, outil report_feedback, seuil de découverte et état de la clé maître."
       />
 
-      <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
         <SettingsForm initial={settings} envPublicUrl={config.publicUrl} />
 
         <div className="flex flex-col gap-3">
