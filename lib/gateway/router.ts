@@ -308,6 +308,27 @@ export function upstreamUnavailableMessage(slug: string, status: string | null, 
   return `Le serveur « ${slug} » n'est pas prêt (statut : ${status ?? "inconnu"}). Réessaie dans un instant ou vérifie sa connexion dans Switchboard.`;
 }
 
+/**
+ * Verify a pessimistic status by actually reconnecting, before turning a call away.
+ *
+ * NOT ensureConnected(): that one returns early whenever the client claims to be
+ * usable, which is exactly the state that causes the bug — the socket died with the
+ * remote restart while the flag still says connected. restart() tears the transport
+ * down and rebuilds it, so the answer is real.
+ *
+ * Never throws: a failed reconnect just means the upstream really is down, and the
+ * caller then reports the status it already had.
+ */
+async function tryReconnect(upstreamId: string): Promise<boolean> {
+  if (!hasUpstreamManager()) return false;
+  try {
+    await getUpstreamManager().restart(upstreamId);
+    return getUpstreamManager().getState(upstreamId)?.status === "ready";
+  } catch {
+    return false;
+  }
+}
+
 function upstreamState(upstreamId: string): { status: string; lastError: string | null } | null {
   if (!hasUpstreamManager()) return null;
   try {
@@ -363,7 +384,22 @@ export async function callPublicTool(
     throw notFoundError("tool", publicName);
   }
 
-  const state = upstreamState(routed.upstreamId);
+  // A non-ready status is a CLAIM, not a fact: it is refreshed by a 60 s ping loop and,
+  // after 5 failures, by a retry every 5 min. When a destination restarts (Harbor
+  // redeploys several times a day), the flag stays "error" for up to 5 minutes after
+  // the service is healthy again — and every call in that window is refused with a
+  // message telling the agent to go look at a UI it cannot see.
+  //
+  // Measured on production: Harbor answered GET /api/health with 200 from INSIDE the
+  // switchboard container while this gate kept refusing its tools. The fix is to try
+  // once before believing the flag, which costs nothing when the upstream is really
+  // down and rescues the common case.
+  let state = upstreamState(routed.upstreamId);
+  if (state && state.status !== "ready" && state.status !== "disabled" && state.status !== "auth_required") {
+    if (await tryReconnect(routed.upstreamId)) {
+      state = upstreamState(routed.upstreamId) ?? state;
+    }
+  }
   if (state && state.status !== "ready") {
     const message = upstreamUnavailableMessage(routed.upstreamSlug, state.status, state.lastError);
     logCall({
