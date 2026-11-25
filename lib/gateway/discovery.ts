@@ -10,9 +10,15 @@
  *   describe_tool({name})             full inputSchema + annotations, meta-tools included
  *   call_tool({name, arguments})      same access rules as `tools/call`
  *
- * `report_feedback` is always appended (lib/gateway/feedbackTool.ts).
+ * `report_feedback` is always appended (lib/gateway/feedbackTool.ts), and an admin-scoped key
+ * also sees `upstream_*` (lib/gateway/adminTools.ts).
  *
- * The search allow-list is the key's effective tool set; lib/catalog/discovery.ts enforces it.
+ * The allow-list is what /mcp will actually EXECUTE — `callableTools()`, i.e. the key's effective
+ * upstream access plus the admin tools when the key is admin. It used to be the effective tool set
+ * alone, which described a smaller world than tools/call accepted: `upstream_create` ran happily
+ * while `describe_tool` called it unknown and `search_tools` denied it existed. An agent that
+ * trusts discovery over trial and error then concludes the tool is missing. Every path here must
+ * start from `callableTools`, never from `visibleTools`.
  *
  * Discoverability matters as much as the access rules: an agent that cannot enumerate its surface
  * burns dozens of calls guessing keywords. That is why "no query" means "list everything", why
@@ -21,12 +27,24 @@
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { searchTools } from "../catalog/discovery";
+import { searchTools, type SearchHit } from "../catalog/discovery";
 import { getCatalogSnapshot } from "../catalog/catalog";
 import { effectiveAccessForKey } from "../auth/grants";
 import type { CatalogEntry } from "../types";
-import { callPublicTool, visibleTools, type GatewayCallContext } from "./router";
+import {
+  callPublicTool,
+  notFoundError,
+  visibleTools,
+  type GatewayCallContext,
+} from "./router";
 import { REPORT_FEEDBACK_TOOL } from "./feedbackTool";
+import {
+  ADMIN_TOOLS,
+  ADMIN_TOOL_NAMES,
+  adminActorForKey,
+  isAdminKey,
+  runAdminTool,
+} from "./adminTools";
 
 export const LIST_SERVERS_NAME = "list_servers";
 export const SEARCH_TOOLS_NAME = "search_tools";
@@ -167,26 +185,111 @@ interface ServerSummary {
   tools: string[];
 }
 
+/**
+ * The pseudo-server the gateway's own management tools belong to.
+ *
+ * Admin tools are callable on /mcp (server.ts) but they belong to no upstream, so a discovery
+ * layer built only on the catalog cannot see them. That asymmetry was a real defect: an admin key
+ * could call `upstream_create` while `describe_tool` answered "outil inconnu" and `search_tools`
+ * said the tool did not exist. Discovery contradicted the callable surface, and the agent went
+ * looking for a REST API instead of using the tool it already had.
+ *
+ * The rule this file now enforces: **whatever /mcp will execute must be discoverable here**.
+ */
+const GATEWAY_SLUG = "switchboard";
+const GATEWAY_UPSTREAM_ID = "__gateway__";
+const GATEWAY_NAME = "Switchboard (gestion)";
+const GATEWAY_DESCRIPTION = "Gestion des serveurs MCP de la passerelle — clé admin uniquement.";
+
+/** The management tools as catalog entries, so one code path formats/searches them like any other. */
+function adminCatalogEntries(keyId: string): CatalogEntry[] {
+  if (!isAdminKey(keyId)) return [];
+  return ADMIN_TOOLS.map((tool) => ({
+    kind: "tool" as const,
+    name: tool.name,
+    publicName: tool.name,
+    upstreamId: GATEWAY_UPSTREAM_ID,
+    upstreamSlug: GATEWAY_SLUG,
+    description: tool.description,
+    definition: {
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      ...(tool.annotations !== undefined ? { annotations: tool.annotations } : {}),
+    },
+    enabled: true,
+  }));
+}
+
+/**
+ * Everything this key can actually call: the granted upstream tools PLUS the admin management
+ * tools when the key is admin-scoped. Every discovery path must start from this, not from
+ * `visibleTools`, or it will describe a smaller world than /mcp accepts.
+ */
+export function callableTools(keyId: string): CatalogEntry[] {
+  const upstream = visibleTools(keyId);
+  const admin = adminCatalogEntries(keyId);
+  return admin.length > 0 ? [...admin, ...upstream] : upstream;
+}
+
 /** Servers this key may use, derived from the effective access (never from the whole catalog). */
 function visibleServers(keyId: string): ServerSummary[] {
   const snapshot = getCatalogSnapshot();
   const access = effectiveAccessForKey(keyId);
-  if (!access) return [];
+  const tools = visibleTools(keyId);
   const out: ServerSummary[] = [];
-  for (const [upstreamId, entry] of Object.entries(access.upstreams)) {
-    if (!entry.hasAccess) continue;
-    const view = snapshot.upstreams[upstreamId];
-    if (!view) continue;
-    const entries = visibleTools(keyId).filter((tool) => tool.upstreamId === upstreamId);
+  if (access) {
+    for (const [upstreamId, entry] of Object.entries(access.upstreams)) {
+      if (!entry.hasAccess) continue;
+      const view = snapshot.upstreams[upstreamId];
+      if (!view) continue;
+      const entries = tools.filter((tool) => tool.upstreamId === upstreamId);
+      out.push({
+        slug: view.slug,
+        name: view.name,
+        description: view.description,
+        toolCount: entries.length,
+        tools: entries.map((tool) => tool.publicName),
+      });
+    }
+  }
+  const admin = adminCatalogEntries(keyId);
+  if (admin.length > 0) {
     out.push({
-      slug: view.slug,
-      name: view.name,
-      description: view.description,
-      toolCount: entries.length,
-      tools: entries.map((tool) => tool.publicName),
+      slug: GATEWAY_SLUG,
+      name: GATEWAY_NAME,
+      description: GATEWAY_DESCRIPTION,
+      toolCount: admin.length,
+      tools: admin.map((tool) => tool.publicName),
     });
   }
   return out.sort((a, b) => b.toolCount - a.toolCount || a.slug.localeCompare(b.slug));
+}
+
+/** Substring match over the gateway's own entries; they are never in the FTS index. */
+function matchGatewayEntries(query: string, entries: CatalogEntry[], limit: number): SearchHit[] {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return [];
+  const hits: SearchHit[] = [];
+  for (const entry of entries) {
+    const haystack = (entry.publicName + " " + (entry.description ?? "")).toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (!haystack.includes(term)) {
+        score = -1;
+        break;
+      }
+      score += entry.publicName.toLowerCase().includes(term) ? 3 : 1;
+    }
+    if (score < 0) continue;
+    hits.push({
+      name: entry.publicName,
+      description: entry.description ?? "",
+      upstream: entry.upstreamSlug,
+      score,
+    });
+  }
+  return hits.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)).slice(0, limit);
 }
 
 /** How many other upstreams exist on the gateway but are not granted to this key (names withheld). */
@@ -273,7 +376,8 @@ function formatAllTools(servers: ServerSummary[], limit: number): { text: string
 
 /** `search_tools` — never leaks tools the key cannot call. */
 export function runSearchTools(keyId: string, input: SearchToolsInput): ToolResult {
-  const allowed: CatalogEntry[] = visibleTools(keyId);
+  // `callableTools`, not `visibleTools`: what /mcp accepts is the contract discovery advertises.
+  const allowed: CatalogEntry[] = callableTools(keyId);
   const servers = visibleServers(keyId);
   const others = otherUpstreamCount(keyId);
 
@@ -323,7 +427,19 @@ export function runSearchTools(keyId: string, input: SearchToolsInput): ToolResu
   }
 
   const limit = asLimit(input.limit, 10, 50);
-  const hits = searchTools(query!, limit, allowed);
+  // The gateway's own entries are not in the FTS index (it is rebuilt from the catalog), so
+  // they are matched directly and merged with the upstream hits.
+  const gatewayHits = matchGatewayEntries(
+    query!,
+    allowed.filter((entry) => entry.upstreamId === GATEWAY_UPSTREAM_ID),
+    limit,
+  );
+  const upstreamHits = searchTools(
+    query!,
+    Math.max(1, limit - gatewayHits.length),
+    allowed.filter((entry) => entry.upstreamId !== GATEWAY_UPSTREAM_ID),
+  );
+  const hits = [...gatewayHits, ...upstreamHits].slice(0, limit);
 
   if (hits.length === 0) {
     // Distinguish "this keyword matches nothing" from "you have no access to that server".
@@ -382,9 +498,13 @@ export function runDescribeTool(keyId: string, input: DescribeToolInput, feedbac
     return { content: [{ type: "text", text: "Le paramètre « name » est obligatoire." }], isError: true };
   }
 
-  // Meta-tools first: they belong to the gateway, not to an upstream.
+  // Meta-tools first: they belong to the gateway, not to an upstream. The admin management
+  // tools are appended when the key really is admin-scoped, because /mcp accepts them for
+  // exactly that key — describing a smaller world than tools/call accepts is the defect this
+  // guards against.
   const metaTools: Tool[] = [...DISCOVERY_TOOLS];
   if (feedbackEnabled) metaTools.push(REPORT_FEEDBACK_TOOL);
+  if (isAdminKey(keyId)) metaTools.push(...ADMIN_TOOLS);
   const meta = metaTools.find((tool) => tool.name === name);
   if (meta) {
     const payload = {
@@ -432,7 +552,14 @@ export function runDescribeTool(keyId: string, input: DescribeToolInput, feedbac
   };
 }
 
-/** `call_tool` — routes exactly like `tools/call`, including the access re-check. */
+/**
+ * `call_tool` — routes exactly like `tools/call`, including the access re-check.
+ *
+ * That includes the admin management tools: they are dispatched before the upstream router in
+ * server.ts, so a call_tool that delegated straight to `callPublicTool` answered "Tool X not
+ * found" for a tool the direct path executed happily. Two entry points into one surface must
+ * route identically or the description ("mêmes règles d'accès qu'un appel direct") is a lie.
+ */
 export async function runCallTool(
   input: CallToolInput,
   ctx: GatewayCallContext,
@@ -445,6 +572,17 @@ export async function runCallTool(
     input.arguments && typeof input.arguments === "object" && !Array.isArray(input.arguments)
       ? (input.arguments as Record<string, unknown>)
       : {};
+
+  // Scope is re-read from the DB on every call, exactly like the direct path in server.ts.
+  if (ADMIN_TOOL_NAMES.includes(name)) {
+    if (!isAdminKey(ctx.keyId)) throw notFoundError("tool", name);
+    return (await runAdminTool(name, args, adminActorForKey(ctx.keyId))) as {
+      content: unknown[];
+      isError?: boolean;
+      structuredContent?: unknown;
+    };
+  }
+
   const result = await callPublicTool(name, args, ctx);
   return result as { content: unknown[]; isError?: boolean; structuredContent?: unknown };
 }

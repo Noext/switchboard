@@ -53,6 +53,19 @@ export function isAdminKey(keyId: string): boolean {
   }
 }
 
+/**
+ * The actor string an admin tool records. Read from the DB by key id, so the direct path (which
+ * has the session's key name at hand) and call_tool (which only has the key id) attribute the
+ * same change to the same actor.
+ */
+export function adminActorForKey(keyId: string): string {
+  try {
+    return getKey(keyId)?.name ?? keyId;
+  } catch {
+    return keyId;
+  }
+}
+
 export interface AdminToolResult {
   content: Array<{ type: "text"; text: string }>;
   structuredContent?: Record<string, unknown>;
